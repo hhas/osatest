@@ -8,6 +8,8 @@
 
 /* Begin PBXBuildFile section */
 		4F19C1311C5532AD002A466E /* main.m in Sources */ = {isa = PBXBuildFile; fileRef = 4F19C1301C5532AD002A466E /* main.m */; };
+		4F19C1381C5532CE002A466E /* OSAKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 4F19C1371C5532CE002A466E /* OSAKit.framework */; };
+		4F19C13E1C553550002A466E /* Carbon.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 4F19C13A1C553392002A466E /* Carbon.framework */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -25,6 +27,9 @@
 /* Begin PBXFileReference section */
 		4F19C12D1C5532AD002A466E /* osatest */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = osatest; sourceTree = BUILT_PRODUCTS_DIR; };
 		4F19C1301C5532AD002A466E /* main.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = main.m; sourceTree = "<group>"; };
+		4F19C1371C5532CE002A466E /* OSAKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = OSAKit.framework; path = System/Library/Frameworks/OSAKit.framework; sourceTree = SDKROOT; };
+		4F19C13A1C553392002A466E /* Carbon.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Carbon.framework; path = System/Library/Frameworks/Carbon.framework; sourceTree = SDKROOT; };
+		4F19C13C1C5533A8002A466E /* OpenScripting.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = OpenScripting.framework; path = ../../../Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX10.11.sdk/System/Library/Frameworks/Carbon.framework/Frameworks/OpenScripting.framework; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -32,6 +37,8 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				4F19C13E1C553550002A466E /* Carbon.framework in Frameworks */,
+				4F19C1381C5532CE002A466E /* OSAKit.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -42,6 +49,7 @@
 			isa = PBXGroup;
 			children = (
 				4F19C12F1C5532AD002A466E /* osatest */,
+				4F19C1391C5532D7002A466E /* Frameworks */,
 				4F19C12E1C5532AD002A466E /* Products */,
 			);
 			sourceTree = "<group>";
@@ -60,6 +68,16 @@
 				4F19C1301C5532AD002A466E /* main.m */,
 			);
 			path = osatest;
+			sourceTree = "<group>";
+		};
+		4F19C1391C5532D7002A466E /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				4F19C13C1C5533A8002A466E /* OpenScripting.framework */,
+				4F19C13A1C553392002A466E /* Carbon.framework */,
+				4F19C1371C5532CE002A466E /* OSAKit.framework */,
+			);
+			name = Frameworks;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -206,6 +224,11 @@
 		4F19C1351C5532AD002A466E /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SDKROOT)$(SYSTEM_LIBRARY_DIR)/Frameworks/Carbon.framework/Frameworks",
+				);
+				GCC_WARN_ABOUT_DEPRECATED_FUNCTIONS = NO;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 			};
 			name = Debug;
@@ -213,6 +236,11 @@
 		4F19C1361C5532AD002A466E /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SDKROOT)$(SYSTEM_LIBRARY_DIR)/Frameworks/Carbon.framework/Frameworks",
+				);
+				GCC_WARN_ABOUT_DEPRECATED_FUNCTIONS = NO;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 			};
 			name = Release;
