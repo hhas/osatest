@@ -123,16 +123,19 @@ int main(int argc, const char * argv[]) {
                                                                                 targetDescriptor: nil
                                                                                         returnID: kAutoGenerateReturnID
                                                                                    transactionID:kAnyTransactionID];
+                
+                
                 NSAppleEventDescriptor *targetDesc = BuildObjectSpecifier(cProperty, formUserPropertyID, suiteNameDesc, nil);
                 
+                [event setAttributeDescriptor:  targetDesc  forKeyword: keySubjectAttr];
     //            [event setParamDescriptor: targetDesc forKeyword: keyDirectObject];
-     //           [event setParamDescriptor: suiteNameDesc forKeyword: 'SuNa'];
-     //           [event setParamDescriptor: handlerNameDesc forKeyword: 'HaNa'];
-     //           [event setParamDescriptor: allHandlerNamesDesc forKeyword: 'AHaN'];
-     //           [event setParamDescriptor: [NSAppleEventDescriptor descriptorWithBoolean: useVT100Styles] forKeyword: 'VFmt'];
+                [event setParamDescriptor: suiteNameDesc forKeyword: 'SuNa'];
+                [event setParamDescriptor: handlerNameDesc forKeyword: 'HaNa'];
+                [event setParamDescriptor: allHandlerNamesDesc forKeyword: 'AHaN'];
+                [event setParamDescriptor: [NSAppleEventDescriptor descriptorWithBoolean: useVT100Styles] forKeyword: 'VFmt'];
                 
                 
-                
+           /*
                 event = [NSAppleEventDescriptor appleEventWithEventClass: 'core'
                                                                  eventID: 'getd'
                                                         targetDescriptor: nil
@@ -141,15 +144,14 @@ int main(int argc, const char * argv[]) {
             
                 [event setParamDescriptor: targetDesc forKeyword: keyDirectObject];
                 [event setAttributeDescriptor: [NSAppleEventDescriptor nullDescriptor] forKeyword: keySubjectAttr];
+            
+            
                 
-                
-                
-               // [event setAttributeDescriptor:  targetDesc  forKeyword: keyDirectObject];
-                
-                
-             //   [event setParamDescriptor: BuildObjectSpecifier(cProperty, formUserPropertyID, [NSAppleEventDescriptor descriptorWithString: @"x"], nil) forKeyword: '----'];
+        //      [event setParamDescriptor: BuildObjectSpecifier(cProperty, formUserPropertyID, [NSAppleEventDescriptor descriptorWithString: @"x"], nil) forKeyword: '----'];
 
-             //      [event setParamDescriptor: BuildObjectSpecifier(cProperty, formUserPropertyID, [NSAppleEventDescriptor descriptorWithString: @"x"], BuildObjectSpecifier(cProperty, formUserPropertyID, suiteNameDesc, nil)) forKeyword: '----'];
+        //      [event setParamDescriptor: BuildObjectSpecifier(cProperty, formUserPropertyID, [NSAppleEventDescriptor descriptorWithString: @"x"], BuildObjectSpecifier(cProperty, formUserPropertyID, suiteNameDesc, nil)) forKeyword: '----'];
+            */
+
                 
                 // important: each test must run in its own CI to avoid sharing TIDs, library instances, etc with other tests
                 OSALanguageInstance *testInstance = [OSALanguageInstance languageInstanceWithLanguage: language];
@@ -158,12 +160,14 @@ int main(int argc, const char * argv[]) {
                                         (__bridge CFURLRef)(scriptURL), kOSAModeCompileIntoContext, &testScriptID);
                 if (err != noErr) return err;
                 
+                
+                
                 CFAttributedStringRef src;
                 OSACopyDisplayString(testInstance.componentInstance, testScriptID, 0, &src);
                 CFShow(CFAttributedStringGetString(src));
                 
                 
-                NSLog(@"\n%@\n\n", SuiteNamesForScript(testInstance.componentInstance, testScriptID));
+                //NSLog(@"\n%@\n\n", SuiteNamesForScript(testInstance.componentInstance, testScriptID));
                 
                 printf("\n\n");
                 
@@ -175,7 +179,7 @@ int main(int argc, const char * argv[]) {
                 err = OSADoEvent(testInstance.componentInstance, event.aeDesc, testScriptID, 0, &replyEvent);
                 
                 if (err != noErr) {
-                    printf("OSADoEvent error: %i\n\n", err);
+                    printf("OSADoEvent error: %i\n\n", err); // OSADoEvent throws -1708 (event not handled)
                 } else {
                     LogAEDesc("Reply Event", &replyEvent);
                 }
