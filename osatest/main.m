@@ -39,17 +39,19 @@ void logAEDesc(char *labelCStr, AEDesc *aeDescPtr) { // DEBUG // TO DO: delete o
 }
 
 void logErr(NSString *format, ...) { // writes message to stderr
-    va_list argList; va_start (argList, format);
+    va_list argList;
+    va_start (argList, format);
     NSString *message = [[NSString alloc] initWithFormat: format arguments: argList];
     va_end (argList);
-    CFShow((CFStringRef)message);
+    fputs(message.UTF8String, stderr);
 }
 
 void logOut(NSString *format, ...) { // writes message to stdout
-    va_list argList; va_start (argList, format);
+    va_list argList;
+    va_start (argList, format);
     NSString *message = [[NSString alloc] initWithFormat: format arguments: argList];
     va_end (argList);
-    printf("%s\n", message.UTF8String);
+    fputs(message.UTF8String, stdout);
 }
 
 
@@ -72,7 +74,7 @@ NSString *scriptErrorMessage(ComponentInstance ci) {
 
 
 void logScriptError(ComponentInstance ci, NSString *message) { // writes OSA script error (i.e. osatest/TestLib bug) to stderr
-    logErr(@"%@ (script error %i: %@)", message, scriptErrorNumber(ci), scriptErrorMessage(ci));
+    logErr(@"%@ (script error %i: %@)\n", message, scriptErrorNumber(ci), scriptErrorMessage(ci));
 }
 
 
@@ -157,21 +159,16 @@ OSAError doSubroutine(ComponentInstance ci, OSAID scriptID, NSString *handlerNam
 /******************************************************************************/
 // perform a single unit text
 
-OSAError performTest(ComponentInstance ci, // run a single unit test, returning scriptID for resultant TestReport script object
-                     AEDesc scriptData, NSURL *scriptURL, NSAppleEventDescriptor *allHandlerNamesDesc,
-                     NSString *suiteName, NSString *handlerName, BOOL useVT100Styles, OSAID *reportScriptID) {
-    // load the test script, then add a new code-generated __performunittest__ handler to it
-    OSAID scriptID;
-    OSAError err = OSALoadScriptData(ci, &scriptData, (__bridge CFURLRef)(scriptURL), 0, &scriptID);
-    if (err != noErr) {
-        fprintf(stderr, "Failed to load script %i\n", scriptID);
-        return err;
-    }
+
+// run a single unit test, returning scriptID for resultant TestReport script object
+OSAError invokeTestLib(ComponentInstance ci, OSAID scriptID, NSAppleEventDescriptor *allHandlerNamesDesc,
+                       NSString *suiteName, NSString *handlerName, BOOL useVT100Styles, OSAID *reportScriptID) {
+    // add a new code-generated __performunittest__ handler to test script
     NSString *code = [NSString stringWithFormat:
                       @"to __performunittest__(|params|)\n"
                       @"return script \"TestLib\"'s __performunittestforsuite__(my (%@), (|params|))\n"
                       @"end __performunittest__", sanitizeIdentifier(suiteName)];
-    err = OSACompile(ci, [NSAppleEventDescriptor descriptorWithString: code].aeDesc, kOSAModeAugmentContext, &scriptID);
+    OSAError err = OSACompile(ci, AESTRING(code).aeDesc, kOSAModeAugmentContext, &scriptID);
     if (err != noErr) {
         fprintf(stderr, "Failed to add __performunittest__\n");
         OSADispose(ci, scriptID);
@@ -200,7 +197,7 @@ OSAError performTest(ComponentInstance ci, // run a single unit test, returning 
 }
 
 
-OSAError logTestReport(ComponentInstance ci, OSAID scriptID, BOOL useVT100Styles) { // tell the TestReport script object returned by performTest to generate finished test report text
+OSAError logTestReport(ComponentInstance ci, OSAID scriptID, BOOL useVT100Styles) { // tell the TestReport script object returned by invokeTestLib to generate finished test report text
     OSAError err = noErr;
     // TO DO: call report handlers to convert text data to text, then to obtain completed report
     while (1) { // breaks when TestReport's nextrawdata iterator is exhausted (i.e. returns error 6502)
@@ -249,8 +246,27 @@ OSAError logTestReport(ComponentInstance ci, OSAID scriptID, BOOL useVT100Styles
         return err;
     }
     // TO DO: direct object needs to be list/record of two (or more?) fields: {statusFlag, reportText}
-    logOut(@"%@\n____________________\n", [replyEvent paramDescriptorForKeyword: keyDirectObject].stringValue);
+    logOut(@"%@\n", [replyEvent paramDescriptorForKeyword: keyDirectObject].stringValue);
     return noErr;
+}
+
+//
+
+OSAError performTest(OSALanguage *language, AEDesc scriptData, NSURL *scriptURL,
+                     NSAppleEventDescriptor *allHandlerNamesDesc,
+                     NSString *suiteName, NSString *handlerName, BOOL useVT100Styles) {
+    @autoreleasepool {
+        OSALanguageInstance *li = [OSALanguageInstance languageInstanceWithLanguage: language];
+        OSAID scriptID, reportScriptID = 0;
+        OSAError err = OSALoadScriptData(li.componentInstance, &scriptData, (__bridge CFURLRef)(scriptURL), 0, &scriptID);
+        if (err != noErr) return err; // (shouldn't fail as script's already been successfully loaded once)
+        err = invokeTestLib(li.componentInstance, scriptID, allHandlerNamesDesc,
+                            suiteName, handlerName, useVT100Styles, &reportScriptID);
+        if (err == noErr) err = logTestReport(li.componentInstance, reportScriptID, useVT100Styles);
+        if (err != noErr) fprintf(stderr, "Failed to generate report (error %i)", err); // i.e. TestLib bug
+        OSADispose(li.componentInstance, reportScriptID);
+        return err;
+    }
 }
 
 
@@ -267,7 +283,7 @@ int main(int argc, const char * argv[]) {
   //      NSURL *scriptURL = [NSURL fileURLWithFileSystemRepresentation:argv[1] isDirectory: NO relativeToURL: nil];
         NSURL *scriptURL = [NSURL fileURLWithPath: @"~/Library/Script Libraries/textlib.unittest.scpt".stringByStandardizingPath]; // TEST; TO DO: delete
         
-        BOOL useVT100Styles = YES; // TO DO: determine if stdout is connected to terminal, and apply VT100 styles
+        BOOL useVT100Styles = NO; // TO DO: determine if stdout is connected to terminal, and apply VT100 styles
         
         NSDate *startTime = [NSDate date];
         logOut(@"Load %@\nBegin tests at %@\n", scriptURL.path, startTime);
@@ -281,7 +297,10 @@ int main(int argc, const char * argv[]) {
         if (err != noErr) return err;
         OSAID scriptID;
         err = OSALoadScriptData(languageInstance.componentInstance, &scriptData, (__bridge CFURLRef)(scriptURL), 0, &scriptID);
-        if (err != noErr) return err;
+        if (err != noErr) {
+            logErr(@"Failed to load script (error %i): %@\n", err, scriptURL.path);
+            return err;
+        }
         NSArray<NSString *> *suiteNames = suiteNamesForScript(languageInstance.componentInstance, scriptID);
         if (suiteNames == nil) {
             fprintf(stderr, "Can’t get suite names.\n");
@@ -291,29 +310,22 @@ int main(int argc, const char * argv[]) {
         // important: each test must run in its own CI to avoid sharing TIDs, library instances, etc with other tests
         NSInteger suiteIndex = 0, testIndex = 0;
         for (NSString *suiteName in suiteNames) {
-            logOut(@"%i  %@", ++suiteIndex, [suiteName substringFromIndex:6]);
+            ++suiteIndex;
             NSAppleEventDescriptor *allHandlerNamesDesc;
             NSArray<NSString *> *handlerNames = testNamesForSuiteName(languageInstance.componentInstance, scriptID,
                                                                       suiteName, &allHandlerNamesDesc);
+            if ([handlerNames containsObject: @"skipTests"]) { // if found, call skipTests handler to get names of tests to ignore as record of form {test_NAME:reasonText,...}
+            }
             for (NSString *handlerName in handlerNames) {
-                @autoreleasepool {
-                    logOut(@"%i.%i  %@", suiteIndex, ++testIndex, [handlerName substringFromIndex:5]);
-                    OSALanguageInstance *testInstance = [OSALanguageInstance languageInstanceWithLanguage: language];
-                    OSAID reportScriptID;
-                    err = performTest(testInstance.componentInstance, scriptData, scriptURL,
-                                      allHandlerNamesDesc, suiteName, handlerName, useVT100Styles, &reportScriptID);
-                    if (err != noErr) {
-                        fprintf(stderr, "Aborted suite (error %i)", err);
-                    } else {
-                        err = logTestReport(testInstance.componentInstance, reportScriptID, useVT100Styles);
-                        if (err != noErr) fprintf(stderr, "Failed to generate report (error %i)", err);
-                        OSADispose(testInstance.componentInstance, reportScriptID);
-                    }
-                }
+                logOut(@"%i.%i  %@'s %@: ", suiteIndex, ++testIndex,
+                       [suiteName substringFromIndex:6], [handlerName substringFromIndex:5]);
+                err = performTest(language, scriptData, scriptURL,
+                                  allHandlerNamesDesc, suiteName, handlerName, useVT100Styles);
+                if (err != noErr) logOut(@"Aborted suite (error %i): %@\n", err, suiteName);
             }
         }
         NSDate *endedTime = [NSDate date];
-        logOut(@"Ended tests at %@ (%0.3fs)", endedTime, [endedTime timeIntervalSinceDate: startTime]);
+        logOut(@"Ended tests at %@ (%0.3fs)\n", endedTime, [endedTime timeIntervalSinceDate: startTime]);
         // TO DO: final tally of pass/fail/broke
     }
     return 0;
