@@ -8,7 +8,10 @@
 //
 //  TO DO: reenable deprecation warnings once logAEDesc is no longer needed and can be deleted
 //
-//  TO DO: would probably be safer if TestLib handlers called by osatest use AE event class and ID codes rather than AS identifiers, as the latter are prone to case changes
+//  TO DO: what to do about control chars appearing in test reports (particularly NUL)?
+//
+//  TO DO: consider making `.unittest.scpt[d]` suffix mandatory, so that when passed a .scptd bundle (e.g. a library script) it can be searched automatically for embedded unit tests
+//
 
 
 #import <Foundation/Foundation.h>
@@ -25,12 +28,12 @@
 #define AEINT(n) ([NSAppleEventDescriptor descriptorWithInt32: (n)])
 #define AEBOOL(nsBool) ([NSAppleEventDescriptor descriptorWithBoolean: (nsBool)])
 
-#define VTNORMAL    "\x1b[0m"
-#define VTBOLD      "\x1b[1m"
-#define VTUNDER     "\x1b[4m"
-#define VTRED       "\x1b[31m"
-#define VTGREEN     "\x1b[32m"
-#define VTBLUE      "\x1b[34m"
+#define VTNORMAL    @"\x1b[0m"
+#define VTBOLD      @"\x1b[1m"
+#define VTUNDER     @"\x1b[4m"
+#define VTRED       @"\x1b[31m"
+#define VTGREEN     @"\x1b[32m"
+#define VTBLUE      @"\x1b[34m"
 
 // constants defined by TestLib's TestSupport sub-library
 #define _BUG     (0)
@@ -267,7 +270,12 @@ OSAError logTestReport(ComponentInstance ci, OSAID scriptID, int lineWrap, int *
     NSAppleEventDescriptor *reportRecord = [[replyEvent paramDescriptorForKeyword: keyDirectObject] coerceToDescriptorType:typeAERecord];
     *testStatus = [reportRecord descriptorForKeyword: 'Stat'].int32Value;
     // TO DO: direct object needs to be list/record of two (or more?) fields: {statusFlag, reportText}
-    logOut(@"%@\n", [reportRecord descriptorForKeyword: 'Repo'].stringValue);
+    NSString *report = [reportRecord descriptorForKeyword: 'Repo'].stringValue;
+    if (report == nil) {
+        logErr(@"Missing report.");
+        return 1;
+    }
+    logOut(@"%@\n", report);
     return noErr;
 }
 
@@ -310,38 +318,29 @@ int terminalColumns(void) {
 // main
 
 
-int main(int argc, const char * argv[]) {
-  /*      if (argc < 2) {
-            printf("Usage: osatest FILE ...\n");
-            return 0;
-        }*/
-    
-    
+int runTestFile(NSURL *scriptURL) {
     @autoreleasepool {
-  //      NSURL *scriptURL = [NSURL fileURLWithFileSystemRepresentation:argv[1] isDirectory: NO relativeToURL: nil];
-        NSURL *scriptURL = [NSURL fileURLWithPath: @"~/Library/Script Libraries/textlib.unittest.scpt".stringByStandardizingPath]; // TEST; TO DO: delete
-        
         int lineWrap = terminalColumns(); // if stdout is connected to terminal returns column width, else returns -1
-        
-        NSDate *startTime = [NSDate date];
-        logOut(@"Load %@\nBegin tests at %@\n", scriptURL.path, startTime);
-        
+        logOut(@"# osatest '%@'\n", [scriptURL.path stringByReplacingOccurrencesOfString: @"'" withString:@"'\\''"]);
         // introspect the unittest.scpt, getting names of all top-level script objects named `suite_NAME`
         // (note: this could quite easily be made recursive, allowing users to group suites into sub-suites if they wish, but for now just go with simple flat `suite>test` hierarchy and see how well that works in practice)
         OSALanguage *language = [OSALanguage languageForName: @"AppleScript"];
         OSALanguageInstance *languageInstance = [OSALanguageInstance languageInstanceWithLanguage: language];
         AEDesc scriptData;
         OSAError err = OSAGetScriptDataFromURL((__bridge CFURLRef)(scriptURL), 0, 0, &scriptData);
-        if (err != noErr) return err;
+        if (err != noErr) {
+            logErr(@"Failed to read script (error %i).\n");
+            return err;
+        }
         OSAID scriptID;
         err = OSALoadScriptData(languageInstance.componentInstance, &scriptData, (__bridge CFURLRef)(scriptURL), 0, &scriptID);
         if (err != noErr) {
-            logErr(@"Failed to load script (error %i): %@\n", err, scriptURL.path);
+            logErr(@"Failed to load script (error %i).\n", err);
             return err;
         }
         NSArray<NSString *> *suiteNames = suiteNamesForScript(languageInstance.componentInstance, scriptID);
         if (suiteNames == nil) {
-            fprintf(stderr, "Can’t get suite names.\n");
+            logErr(@"Can’t get suite names.\n");
             return 1;
         }
         // TO DO: check for a top-level "skipSuites" handler containing record of form {suite_NAME:reasonText,...}; if found, skip and log accordingly (simplest is to call OSAGetHandler to confirm existence, then send event if found [i.e. don't want to blindly send AE as there's no way to tell if -1708 error is due to handler not existing or handler containing a bug])
@@ -350,6 +349,8 @@ int main(int argc, const char * argv[]) {
         NSInteger suiteIndex = 0, testIndex = 0;
         NSString *testTitleTemplate = lineWrap == -1 ? @"%i.%i %@'s %@: " : @"\x1b[1m%i.%i %@'s %@\x1b[0m: ";
         StatusCounts statusCounts = {0,0,0,0,0};
+        NSDate *startTime = [NSDate date];
+        logOut(@"Begin tests at %@\n", startTime);
         for (NSString *suiteName in suiteNames) {
             ++suiteIndex;
             NSAppleEventDescriptor *allHandlerNamesDesc;
@@ -385,10 +386,27 @@ int main(int argc, const char * argv[]) {
         }
         NSDate *endedTime = [NSDate date];
         logOut(@"Ended tests at %@ (%0.3fs)\n", endedTime, [endedTime timeIntervalSinceDate: startTime]);
-        logOut(@"Result: %i passed, %i failed, %i broken, %i skipped.\n",
-               statusCounts.success, statusCounts.failure, statusCounts.broken, statusCounts.skipped);
+        logOut(@"%@%@Result: %i passed, %i failed, %i broken, %i skipped.%@\n\n",
+               (statusCounts.failure == 0 && statusCounts.broken == 0 ? VTGREEN : VTRED), (lineWrap == -1 ? @"" : VTBOLD),
+               statusCounts.success, statusCounts.failure, statusCounts.broken, statusCounts.skipped,
+               (lineWrap == -1 ? @"" : VTNORMAL));
     }
     return 0;
 }
 
+
+
+int main(int argc, const char * argv[]) {
+    if (argc < 2 || strcmp(argv[1], "-h") == 0) {
+        printf("Usage: osatest FILE ...\n"); // TO DO: re-enable
+//        return runTestFile([NSURL fileURLWithPath: @"~/Library/Script Libraries/textlib.unittest.scpt".stringByStandardizingPath]); // TEST; TO DO: delete
+        return 0;
+    }
+    for (int i = 1; i < argc; i++) {
+        NSURL *scriptURL = [NSURL fileURLWithFileSystemRepresentation:argv[i] isDirectory: NO relativeToURL: nil];
+        if (scriptURL == nil) return fnfErr;
+        int err = runTestFile(scriptURL);
+        if (err != noErr) return err;
+    }
+}
 
