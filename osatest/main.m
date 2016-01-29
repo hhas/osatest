@@ -35,6 +35,10 @@
 #define VTGREEN     @"\x1b[32m"
 #define VTBLUE      @"\x1b[34m"
 
+#define VTHEADING   (VTBOLD VTUNDER)
+#define VTPASSED    (VTGREEN)
+#define VTFAILED    (VTRED)
+
 // constants defined by TestLib's TestSupport sub-library
 #define _BUG     (0)
 #define _SUCCESS (1)
@@ -321,7 +325,10 @@ int terminalColumns(void) {
 int runTestFile(NSURL *scriptURL) {
     @autoreleasepool {
         int lineWrap = terminalColumns(); // if stdout is connected to terminal returns column width, else returns -1
-        logOut(@"# osatest '%@'\n", [scriptURL.path stringByReplacingOccurrencesOfString: @"'" withString:@"'\\''"]);
+        logOut(@"%@osatest '%@'%@\n",
+               (lineWrap == -1 ? @"" : VTHEADING),
+               [scriptURL.path stringByReplacingOccurrencesOfString: @"'" withString:@"'\\''"],
+               (lineWrap == -1 ? @"" : VTNORMAL));
         // introspect the unittest.scpt, getting names of all top-level script objects named `suite_NAME`
         // (note: this could quite easily be made recursive, allowing users to group suites into sub-suites if they wish, but for now just go with simple flat `suite>test` hierarchy and see how well that works in practice)
         OSALanguage *language = [OSALanguage languageForName: @"AppleScript"];
@@ -346,9 +353,9 @@ int runTestFile(NSURL *scriptURL) {
         // TO DO: check for a top-level "skipSuites" handler containing record of form {suite_NAME:reasonText,...}; if found, skip and log accordingly (simplest is to call OSAGetHandler to confirm existence, then send event if found [i.e. don't want to blindly send AE as there's no way to tell if -1708 error is due to handler not existing or handler containing a bug])
         // run the unit tests
         // important: each test must run in its own CI to avoid sharing TIDs, library instances, etc with other tests
-        NSInteger suiteIndex = 0, testIndex = 0;
         NSString *testTitleTemplate = lineWrap == -1 ? @"%i.%i %@'s %@: " : @"\x1b[1m%i.%i %@'s %@\x1b[0m: ";
         StatusCounts statusCounts = {0,0,0,0,0};
+        NSInteger suiteIndex = 0;
         NSDate *startTime = [NSDate date];
         logOut(@"Begin tests at %@\n", startTime);
         for (NSString *suiteName in suiteNames) {
@@ -359,6 +366,7 @@ int runTestFile(NSURL *scriptURL) {
             if ([handlerNames containsObject: @"skipTests"]) { // if found, call skipTests handler to get names of tests to ignore as record of form {test_NAME:reasonText,...}
             }
             NSString *suiteTitle = [suiteName substringFromIndex:6];
+            NSInteger testIndex = 0;
             for (NSString *handlerName in handlerNames) {
                 logOut(testTitleTemplate, suiteIndex, ++testIndex, suiteTitle, [handlerName substringFromIndex:5]);
                 int status = 0; // -1 = TestLib failed (bug)
@@ -387,7 +395,8 @@ int runTestFile(NSURL *scriptURL) {
         NSDate *endedTime = [NSDate date];
         logOut(@"Ended tests at %@ (%0.3fs)\n", endedTime, [endedTime timeIntervalSinceDate: startTime]);
         logOut(@"%@%@Result: %i passed, %i failed, %i broken, %i skipped.%@\n\n",
-               (statusCounts.failure == 0 && statusCounts.broken == 0 ? VTGREEN : VTRED), (lineWrap == -1 ? @"" : VTBOLD),
+               (statusCounts.failure == 0 && statusCounts.broken == 0 ? VTPASSED : VTFAILED),
+               (lineWrap == -1 ? @"" : VTBOLD),
                statusCounts.success, statusCounts.failure, statusCounts.broken, statusCounts.skipped,
                (lineWrap == -1 ? @"" : VTNORMAL));
     }
