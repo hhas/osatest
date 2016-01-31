@@ -48,13 +48,15 @@
 #define VTPASSED    (VTBOLD VTGREEN)
 #define VTFAILED    (VTBOLD VTRED)
 
-// constants defined by TestLib's TestSupport sub-library
+// constants defined by TestTools's TestSupport sub-library
 #define _BUG       (0)
 #define _SUCCESS   (1)
 #define _FAILURE   (2)
 #define _BROKEN    (3)
 #define _SKIPPED   (4)
 #define _SKIPSUITE (9)
+
+#define _NOSTATUS  (-1)
 
 typedef struct {
     int bug;
@@ -109,7 +111,7 @@ NSString *scriptErrorMessage(ComponentInstance ci) {
 }
 
 
-void logScriptError(ComponentInstance ci, NSString *message) { // writes OSA script error (i.e. osatest/TestLib bug) to stderr
+void logScriptError(ComponentInstance ci, NSString *message) { // writes OSA script error (i.e. osatest/TestTools bug) to stderr
     logErr(@"%@ (script error %i: %@)\n", message, scriptErrorNumber(ci), scriptErrorMessage(ci));
 }
 
@@ -192,13 +194,13 @@ OSAError callSubroutine(ComponentInstance ci, OSAID scriptID, NSString *handlerN
 
 
 // run a single unit test, returning scriptID for resultant TestReport script object
-OSAError invokeTestLib(ComponentInstance ci, OSAID scriptID,
-                       NSString *suiteName, NSString *handlerName, int lineWidth, OSAID *reportScriptID) {
+OSAError invokeTestTools(ComponentInstance ci, OSAID scriptID,
+                         NSString *suiteName, NSString *handlerName, int lineWidth, OSAID *reportScriptID) {
     // add a new code-generated __performunittest__ handler to test script
     NSString *escapedSuiteName = sanitizeIdentifier(suiteName);
     NSString *code = [NSString stringWithFormat:
                       @"to __performunittest__(|params|)\n"
-                      @"  return script \"TestLib\"'s __performunittestforsuite__(my (%@), (|params|))\n"
+                      @"  return script \"TestTools\"'s __performunittestforsuite__(my (%@), (|params|))\n"
                       @"end __performunittest__", escapedSuiteName];
     OSAError err = OSACompile(ci, AESTRING(code).aeDesc, kOSAModeAugmentContext, &scriptID);
     if (err != noErr) {
@@ -215,12 +217,12 @@ OSAError invokeTestLib(ComponentInstance ci, OSAID scriptID,
     [params insertDescriptor: testData atIndex: 0];
     NSAppleEventDescriptor *event = newSubroutineEvent(@"__performunittest__", params);
     // call test script's code-generated __performunittest__ handler passing test data;
-    // it then calls TestLib's __performunittestforsuite__ with the `suite_NAME` object and test data
+    // it then calls TestTools's __performunittestforsuite__ with the `suite_NAME` object and test data
     // __performunittestforsuite__ should always return a TestReport object, which appears as a new scriptID
     err = OSAExecuteEvent(ci, event.aeDesc, scriptID, 0, reportScriptID);
-    if (err == errOSAScriptError) { // i.e. osatest/TestLib bug
+    if (err == errOSAScriptError) { // i.e. osatest/TestTools bug
         logScriptError(ci, [NSString stringWithFormat: @"Failed to perform %@'s %@.", suiteName, handlerName]);
-    } else if (err != noErr) { // i.e. TestLib bug
+    } else if (err != noErr) { // i.e. TestTools bug
         logErr(@"OSADoEvent error: %i\n\n", err); // e.g. -1708 = event not handled
     }
     OSADispose(ci, scriptID);
@@ -228,7 +230,7 @@ OSAError invokeTestLib(ComponentInstance ci, OSAID scriptID,
 }
 
 
-OSAError logTestReport(ComponentInstance ci, OSAID scriptID, int lineWidth, int *testStatus) { // tell the TestReport script object returned by invokeTestLib to generate finished test report text
+OSAError logTestReport(ComponentInstance ci, OSAID scriptID, int lineWidth, int *testStatus) { // tell the TestReport script object returned by invokeTestTools to generate finished test report text
     OSAError err = noErr;
     // TO DO: call report handlers to convert text data to text, then to obtain completed report
     while (1) { // breaks when TestReport's nextrawdata iterator is exhausted (i.e. returns error 6502)
@@ -237,13 +239,13 @@ OSAError logTestReport(ComponentInstance ci, OSAID scriptID, int lineWidth, int 
         OSAID valueID;
         err = OSAExecuteEvent(ci, getRawEvent.aeDesc, scriptID, 0, &valueID);
         if (err != noErr) {
-            if (err == errOSAScriptError) { // i.e. osatest/TestLib bug
+            if (err == errOSAScriptError) { // i.e. osatest/TestTools bug
                 if (scriptErrorNumber(ci) == 6502) {
                     break; // exit loop
                 } else {
                     logScriptError(ci, @"Failed to get next raw value.");
                 }
-            } else if (err != noErr) { // i.e. TestLib bug, e.g. -1708 = event not handled = incorrect handler name
+            } else if (err != noErr) { // i.e. TestTools bug, e.g. -1708 = event not handled = incorrect handler name
                 logErr(@"Failed to get next raw value (error: %i).\n", err);
             }
             return err;
@@ -291,9 +293,9 @@ OSAError runOneTest(OSALanguage *language, AEDesc scriptData, NSURL *scriptURL,
         OSAID scriptID, reportScriptID = 0;
         OSAError err = OSALoadScriptData(li.componentInstance, &scriptData, (__bridge CFURLRef)(scriptURL), 0, &scriptID);
         if (err != noErr) return err; // (shouldn't fail as script's already been successfully loaded once)
-        err = invokeTestLib(li.componentInstance, scriptID, suiteName, handlerName, lineWidth, &reportScriptID);
+        err = invokeTestTools(li.componentInstance, scriptID, suiteName, handlerName, lineWidth, &reportScriptID);
         if (err == noErr) err = logTestReport(li.componentInstance, reportScriptID, lineWidth, status);
-        if (err != noErr) logErr(@"Failed to generate report (error %i)", err); // i.e. TestLib bug
+        if (err != noErr) logErr(@"Failed to generate report (error %i)", err); // i.e. TestTools bug
         OSADispose(li.componentInstance, reportScriptID);
         return err;
     }
@@ -306,7 +308,7 @@ OSAError runOneTest(OSALanguage *language, AEDesc scriptData, NSURL *scriptURL,
 int terminalColumns(void) {
     int width = -1;
     struct winsize ws;
-    int fd = open("/dev/tty", O_RDWR);
+    int fd = open("/dev/tty", O_RDONLY);
     if (fd < 0) return -1;
     if (ioctl(fd, TIOCGWINSZ, &ws) == 0) width = (int)ws.ws_col;
     close(fd);
@@ -362,7 +364,7 @@ int runTestFile(NSURL *scriptURL) {
             NSInteger testIndex = 0;
             for (NSString *handlerName in handlerNames) {
                 logOut(testTitleTemplate, suiteIndex, ++testIndex, suiteTitle, [handlerName substringFromIndex:5]);
-                int status = 0; // -1 = TestLib failed (bug)
+                int status = _NOSTATUS; // 0 = TestTools failed (bug)
                 err = runOneTest(language, scriptDesc, scriptURL, suiteName, handlerName, lineWidth, &status);
                 if (err != noErr) FAILRETURN;
                 if (status == _SKIPSUITE) { // break out of runOneTest loop
@@ -380,7 +382,8 @@ int runTestFile(NSURL *scriptURL) {
                     case _BROKEN:
                         statusCounts.broken++;
                         break;
-                    case _SKIPPED:
+                    case _NOSTATUS: // no asserts were performed
+                    case _SKIPPED:  // test handler was deliberately skipped
                         statusCounts.skipped++;
                         break;
                     default:
@@ -404,7 +407,7 @@ int runTestFile(NSURL *scriptURL) {
 int main(int argc, const char * argv[]) {
     if (argc < 2 || strcmp(argv[1], "-h") == 0) {
         printf("Usage: osatest FILE ...\n");
-//        return runTestFile([NSURL fileURLWithPath: @"~/Library/Script Libraries/unittests/textlib.unittest.scpt".stringByStandardizingPath]); // TEST; TO DO: delete
+//        return runTestFile([NSURL fileURLWithPath: @"~/Library/Script Libraries/unittests/text.unittest.scpt".stringByStandardizingPath]); // TEST; TO DO: delete
         return 0;
     }
     for (int i = 1; i < argc; i++) {
