@@ -138,15 +138,15 @@ NSArray<NSString *> *suiteNamesForScript(ComponentInstance ci, OSAID scriptID) {
 
 
 NSArray<NSString *> *testNamesForSuiteName(ComponentInstance ci, OSAID scriptID, NSString *suiteName) {
-    OSAID scriptValueID;
-    if (OSAGetProperty(ci, 0, scriptID, AESTRING(suiteName).aeDesc, &scriptValueID) != noErr) return nil;
+    OSAID valueID;
+    if (OSAGetProperty(ci, 0, scriptID, AESTRING(suiteName).aeDesc, &valueID) != noErr) return nil;
     // TO DO: check scriptValueID is actually typeScript? or is OSAGetHandlerNames guaranteed to fail if it isn't?
     AEDescList resultingNames;
     NSArray<NSString *> *names = nil;
-    if (OSAGetHandlerNames(ci, 0, scriptValueID, &resultingNames) == noErr) {
+    if (OSAGetHandlerNames(ci, 0, valueID, &resultingNames) == noErr) {
         names = filterNamesByPrefix(AEWRAP(&resultingNames), @"test_");
     }
-    OSADispose(ci, scriptValueID);
+    OSADispose(ci, valueID);
     return names;
 }
 
@@ -194,8 +194,8 @@ OSAError callSubroutine(ComponentInstance ci, OSAID scriptID, NSString *handlerN
 
 
 // run a single unit test, returning scriptID for resultant TestReport script object
-OSAError invokeTestTools(ComponentInstance ci, OSAID scriptID,
-                         NSString *suiteName, NSString *handlerName, int lineWidth, OSAID *reportScriptID) {
+OSAError callTestTools(ComponentInstance ci, OSAID scriptID,
+                       NSString *suiteName, NSString *handlerName, int lineWidth, OSAID *reportScriptID) {
     // add a new code-generated __performunittest__ handler to test script
     NSString *escapedSuiteName = sanitizeIdentifier(suiteName);
     NSString *code = [NSString stringWithFormat:
@@ -205,7 +205,6 @@ OSAError invokeTestTools(ComponentInstance ci, OSAID scriptID,
     OSAError err = OSACompile(ci, AESTRING(code).aeDesc, kOSAModeAugmentContext, &scriptID);
     if (err != noErr) {
         logErr(@"Failed to add __performunittest__\n");
-        OSADispose(ci, scriptID);
         return err;
     }
     // build AppleEvent to invoke the __performunittest__ handler
@@ -225,12 +224,11 @@ OSAError invokeTestTools(ComponentInstance ci, OSAID scriptID,
     } else if (err != noErr) { // i.e. TestTools bug
         logErr(@"OSADoEvent error: %i\n\n", err); // e.g. -1708 = event not handled
     }
-    OSADispose(ci, scriptID);
     return err;
 }
 
 
-OSAError logTestReport(ComponentInstance ci, OSAID scriptID, int lineWidth, int *testStatus) { // tell the TestReport script object returned by invokeTestTools to generate finished test report text
+OSAError printTestReport(ComponentInstance ci, OSAID scriptID, int lineWidth, int *testStatus) { // tell the TestReport script object returned by invokeTestTools to generate finished test report text
     OSAError err = noErr;
     // TO DO: call report handlers to convert text data to text, then to obtain completed report
     while (1) { // breaks when TestReport's nextrawdata iterator is exhausted (i.e. returns error 6502)
@@ -251,7 +249,9 @@ OSAError logTestReport(ComponentInstance ci, OSAID scriptID, int lineWidth, int 
             return err;
         }
         AEDesc literalValueDesc;
+ //       logErr(@"%i ",valueID); // DEBUG
         err = OSADisplay(ci, valueID, typeUnicodeText, 0, &literalValueDesc);
+ //       logAEDesc("",&literalValueDesc); // DEBUG
         OSADispose(ci, valueID);
         if (err != noErr) {
             logErr(@"Failed to format raw value (error: %i).\n", err);
@@ -293,10 +293,11 @@ OSAError runOneTest(OSALanguage *language, AEDesc scriptData, NSURL *scriptURL,
         OSAID scriptID, reportScriptID = 0;
         OSAError err = OSALoadScriptData(li.componentInstance, &scriptData, (__bridge CFURLRef)(scriptURL), 0, &scriptID);
         if (err != noErr) return err; // (shouldn't fail as script's already been successfully loaded once)
-        err = invokeTestTools(li.componentInstance, scriptID, suiteName, handlerName, lineWidth, &reportScriptID);
-        if (err == noErr) err = logTestReport(li.componentInstance, reportScriptID, lineWidth, status);
+        err = callTestTools(li.componentInstance, scriptID, suiteName, handlerName, lineWidth, &reportScriptID);
+        if (err == noErr) err = printTestReport(li.componentInstance, reportScriptID, lineWidth, status);
         if (err != noErr) logErr(@"Failed to generate report (error %i)", err); // i.e. TestTools bug
         OSADispose(li.componentInstance, reportScriptID);
+        OSADispose(li.componentInstance, scriptID);
         return err;
     }
 }
@@ -407,7 +408,7 @@ int runTestFile(NSURL *scriptURL) {
 int main(int argc, const char * argv[]) {
     if (argc < 2 || strcmp(argv[1], "-h") == 0) {
         printf("Usage: osatest FILE ...\n");
-//        return runTestFile([NSURL fileURLWithPath: @"~/Library/Script Libraries/unittests/text.unittest.scpt".stringByStandardizingPath]); // TEST; TO DO: delete
+        return runTestFile([NSURL fileURLWithPath: @"~/Library/Script Libraries/unittests/text.unittest.scpt".stringByStandardizingPath]); // TEST; TO DO: delete
         return 0;
     }
     for (int i = 1; i < argc; i++) {
