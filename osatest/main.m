@@ -2,9 +2,10 @@
 //  main.m
 //  osatest
 //
-//  note: OSAKit's OSAScript class doesn't expose a public scriptID property, so is unusable
-//  if OpenScripting.framework-only C APIs need to be used for anything (which they are);
-//  thus everything except creating AppleScript ComponentInstances is done old-school
+//  Note: OSAKit's OSAScript class doesn't expose a public OSAID property, so is useless if
+//  OpenScripting.framework's C APIs ever need to be used (e.g. for getting property names).
+//  Therefore everything except creating AppleScript CIs (which OSALanguageInstance can do)
+//  is done via gnarly old legacy C APIs, which is not ideal but is the only way that works.
 //
 //  TO DO: reenable deprecation warnings once logAEDesc is no longer needed and can be deleted
 //
@@ -12,7 +13,6 @@
 //
 //  TO DO: consider making `.unittest.scpt[d]` suffix mandatory, so that when passed a .scptd bundle (e.g. a library script) it can be searched automatically for embedded unit tests
 //
-// TO DO: check that runOneTest() and its sub-calls always log error message before returning error code
 
 
 #import <Foundation/Foundation.h>
@@ -24,12 +24,14 @@
 #include <unistd.h>
 
 
+#define TESTLIBRARYNAME     @"TestTools"
+
 #define AEWRAP(aedesc)      ([[NSAppleEventDescriptor alloc] initWithAEDescNoCopy: (aedesc)])
 #define AESTRING(nsString)  ([NSAppleEventDescriptor descriptorWithString: (nsString)])
 #define AEINT(n)            ([NSAppleEventDescriptor descriptorWithInt32: (n)])
 #define AEBOOL(nsBool)      ([NSAppleEventDescriptor descriptorWithBoolean: (nsBool)])
 
-#define AEEMPTYLIST             ([NSAppleEventDescriptor listDescriptor])
+#define AEEMPTYLIST()           ([NSAppleEventDescriptor listDescriptor])
 #define AEADDTOLIST(desc, item) ([(desc) insertDescriptor: (item) atIndex: 0])
 
 #define AEERRORMESSAGE(evt)     ([(evt) paramDescriptorForKeyword: keyErrorString].stringValue ?: @"")
@@ -48,7 +50,8 @@
 #define VTPASSED    (VTBOLD VTGREEN)
 #define VTFAILED    (VTBOLD VTRED)
 
-// constants defined by TestTools's TestSupport sub-library
+// test outcome constants defined by TestTools's TestSupport sub-library
+#define _NOSTATUS  (-1)
 #define _BUG       (0)
 #define _SUCCESS   (1)
 #define _FAILURE   (2)
@@ -56,7 +59,6 @@
 #define _SKIPPED   (4)
 #define _SKIPSUITE (9)
 
-#define _NOSTATUS  (-1)
 
 typedef struct {
     int bug;
@@ -64,10 +66,11 @@ typedef struct {
     int failure;
     int broken;
     int skipped;
-} StatusCounts;
+} StatusCounts; // tally of test outcomes for final summary
+
 
 /******************************************************************************/
-// write to stdout/stderr
+// print to stdout/stderr
 
 void logAEDesc(char *labelCStr, AEDesc *aeDescPtr) { // DEBUG // TO DO: delete once no longer needed
     Handle h;
@@ -93,8 +96,9 @@ void logOut(NSString *format, ...) { // writes message to stdout
 }
 
 
-// get/write ScriptError info
-
+// if an error occurs during script execution, OSAExecute, etc set error on CI then return errOSAScriptError;
+// OSAScriptError must then be called to extract those details; use the following convenience functions to
+// retrieve the most commonly used details (error number and message) and print them to stderr
 
 OSAError scriptErrorNumber(ComponentInstance ci) {
     AEDesc desc = {0,0};
@@ -110,14 +114,25 @@ NSString *scriptErrorMessage(ComponentInstance ci) {
     return AEWRAP(&desc).stringValue;
 }
 
-
 void logScriptError(ComponentInstance ci, NSString *message) { // writes OSA script error (i.e. osatest/TestTools bug) to stderr
     logErr(@"%@ (script error %i: %@)\n", message, scriptErrorNumber(ci), scriptErrorMessage(ci));
 }
 
 
+// determine if stdout is connected to a terminal (if it is, test reports will be formatted accordingly)
+int terminalColumns(void) {
+    int width = -1;
+    struct winsize ws;
+    int fd = open("/dev/tty", O_RDONLY);
+    if (fd < 0) return -1;
+    if (ioctl(fd, TIOCGWINSZ, &ws) == 0) width = (int)ws.ws_col;
+    close(fd);
+    return width;
+}
+
+
 /******************************************************************************/
-// introspection
+// introspect test script for [script] objects with `suite_` prefix and handlers within those objects with `test_` prefix
 
 NSArray<NSString *> *filterNamesByPrefix(NSAppleEventDescriptor *namesDesc, NSString *prefix) {
     NSMutableArray<NSString *> *names = [NSMutableArray array];
@@ -154,6 +169,7 @@ NSArray<NSString *> *testNamesForSuiteName(ComponentInstance ci, OSAID scriptID,
 /******************************************************************************/
 // call script handler support
 
+// an AS identifier can be pretty much anything as long as it's wrapped in pipes, e.g. `|name|`, `|foo 123!|`
 NSString *sanitizeIdentifier(NSString *name) {
     NSString *newName = [[name stringByReplacingOccurrencesOfString: @"\\" withString: @"\\\\"]
                          stringByReplacingOccurrencesOfString: @"|" withString: @"\\|"];
@@ -162,6 +178,7 @@ NSString *sanitizeIdentifier(NSString *name) {
 }
 
 
+// build an Apple event for invoking an AS handler with an identifier-based name and positional parameters
 NSAppleEventDescriptor *newSubroutineEvent(NSString *name, NSAppleEventDescriptor *paramsList) {
     NSAppleEventDescriptor *event = [NSAppleEventDescriptor appleEventWithEventClass: kASAppleScriptSuite
                                                                              eventID: kASSubroutineEvent
@@ -184,7 +201,7 @@ OSAError callSubroutine(ComponentInstance ci, OSAID scriptID, NSString *handlerN
                                                      transactionID: kAnyTransactionID];
     NSAppleEventDescriptor *setRawEvent = newSubroutineEvent(handlerName, paramsList);
     OSAError err = OSADoEvent(ci, setRawEvent.aeDesc, scriptID, 0, (AEDesc *)((*replyEvent).aeDesc));
-    if (err == noErr) err = [*replyEvent paramDescriptorForKeyword: keyErrorNumber].int32Value;
+    if (err == noErr) err = AEERRORNUMBER(*replyEvent); // if event was dispatched successfully, check reply event for any error
     return err;
 }
 
@@ -192,15 +209,14 @@ OSAError callSubroutine(ComponentInstance ci, OSAID scriptID, NSString *handlerN
 /******************************************************************************/
 // perform a single unit text
 
-
-// run a single unit test, returning scriptID for resultant TestReport script object
+// run a single unit test, returning scriptID for a TestReport script object containing the raw test results
 OSAError callTestTools(ComponentInstance ci, OSAID scriptID,
                        NSString *suiteName, NSString *handlerName, int lineWidth, OSAID *reportScriptID) {
     // add a new code-generated __performunittest__ handler to test script
     NSString *escapedSuiteName = sanitizeIdentifier(suiteName);
     NSString *code = [NSString stringWithFormat:
                       @"to __performunittest__(|params|)\n"
-                      @"  return script \"TestTools\"'s __performunittestforsuite__(my (%@), (|params|))\n"
+                      @"  return script \"" TESTLIBRARYNAME @"\"'s __performunittestforsuite__(my (%@), (|params|))\n"
                       @"end __performunittest__", escapedSuiteName];
     OSAError err = OSACompile(ci, AESTRING(code).aeDesc, kOSAModeAugmentContext, &scriptID);
     if (err != noErr) {
@@ -208,12 +224,12 @@ OSAError callTestTools(ComponentInstance ci, OSAID scriptID,
         return err;
     }
     // build AppleEvent to invoke the __performunittest__ handler
-    NSAppleEventDescriptor *testData = AEEMPTYLIST;
+    NSAppleEventDescriptor *testData = AEEMPTYLIST();
     AEADDTOLIST(testData, AESTRING(suiteName));
     AEADDTOLIST(testData, AESTRING(handlerName));
     AEADDTOLIST(testData, AEINT(lineWidth));
-    NSAppleEventDescriptor *params = AEEMPTYLIST;
-    [params insertDescriptor: testData atIndex: 0];
+    NSAppleEventDescriptor *params = AEEMPTYLIST();
+    AEADDTOLIST(params, testData);
     NSAppleEventDescriptor *event = newSubroutineEvent(@"__performunittest__", params);
     // call test script's code-generated __performunittest__ handler passing test data;
     // it then calls TestTools's __performunittestforsuite__ with the `suite_NAME` object and test data
@@ -228,64 +244,62 @@ OSAError callTestTools(ComponentInstance ci, OSAID scriptID,
 }
 
 
-OSAError printTestReport(ComponentInstance ci, OSAID scriptID, int lineWidth, int *testStatus) { // tell the TestReport script object returned by invokeTestTools to generate finished test report text
-    OSAError err = noErr;
-    // TO DO: call report handlers to convert text data to text, then to obtain completed report
-    while (1) { // breaks when TestReport's nextrawdata iterator is exhausted (i.e. returns error 6502)
-    // build AppleEvent to invoke TestReport's nextrawdata handler, returning an AS value ID to format as AS literal
-        NSAppleEventDescriptor *getRawEvent = newSubroutineEvent(@"nextrawdata", AEEMPTYLIST);
+// use the TestReport object returned by invokeTestTools to render the finished test report
+OSAError printTestReport(ComponentInstance ci, OSAID scriptID, int lineWidth, int *testStatus) {
+    OSAError err = noErr; // note: report generation should never fail, but check for errors anyway in case TestTools is buggy
+    // call TestReport's nextrawdata and updaterawdata methods to convert each bit of raw data gathered by asserts to literal text
+    while (1) { // loop breaks below when TestReport's nextrawdata iterator is exhausted
+        // invoke TestReport's nextrawdata method; the result is an OSAID for a single AS value to convert
+        NSAppleEventDescriptor *getRawEvent = newSubroutineEvent(@"nextrawdata", AEEMPTYLIST());
         OSAID valueID;
         err = OSAExecuteEvent(ci, getRawEvent.aeDesc, scriptID, 0, &valueID);
         if (err != noErr) {
-            if (err == errOSAScriptError) { // i.e. osatest/TestTools bug
-                if (scriptErrorNumber(ci) == 6502) {
-                    break; // exit loop
-                } else {
-                    logScriptError(ci, @"Failed to get next raw value.");
-                }
-            } else if (err != noErr) { // i.e. TestTools bug, e.g. -1708 = event not handled = incorrect handler name
+            if (err == errOSAScriptError) {
+                if (scriptErrorNumber(ci) == 6502) break; // error 6502 signals that iterator is exhausted, so exit loop
+                logScriptError(ci, @"Failed to get next raw value."); // else it's a bug in TestSupport's nextrawdata iterator
+            } else if (err != noErr) { // some other bug (e.g. -1708 = event not handled, i.e. incorrect handler name)
                 logErr(@"Failed to get next raw value (error: %i).\n", err);
             }
             return err;
         }
+        // convert the raw AS value to its literal representation
         AEDesc literalValueDesc;
- //       logErr(@"%i ",valueID); // DEBUG
         err = OSADisplay(ci, valueID, typeUnicodeText, 0, &literalValueDesc);
- //       logAEDesc("",&literalValueDesc); // DEBUG
         OSADispose(ci, valueID);
         if (err != noErr) {
             logErr(@"Failed to format raw value (error: %i).\n", err);
             return err;
         }
-        NSAppleEventDescriptor *params = AEEMPTYLIST;
-        [params insertDescriptor: AEWRAP(&literalValueDesc) atIndex: 0];
+        // pass the formatted text back to TestReport
+        NSAppleEventDescriptor *params = AEEMPTYLIST();
+        AEADDTOLIST(params, AEWRAP(&literalValueDesc));
         NSAppleEventDescriptor *replyEvent = nil;
         err = callSubroutine(ci, scriptID, @"updaterawdata", params, &replyEvent);
         if (err != noErr) { // bug in TestReport's updaterawdata handler
-            logErr(@"Failed to update raw value. %@\n", AEERRORMESSAGE(replyEvent));
+            logErr(@"Failed to update raw value (error %i). %@\n", err, AEERRORMESSAGE(replyEvent));
             return err;
         }
     }
+    // once all raw values have been converted to text, tell TestReport to to render the test report
     NSAppleEventDescriptor *replyEvent = nil;
-    err = callSubroutine(ci, scriptID, @"renderreport", AEEMPTYLIST, &replyEvent);
+    err = callSubroutine(ci, scriptID, @"renderreport", AEEMPTYLIST(), &replyEvent);
     if (err != noErr) { // bug in TestReport's renderreport handler
-        logErr(@"Report generation failed. %@\n", AEERRORMESSAGE(replyEvent));
+        logErr(@"Report generation failed (error %i). %@\n", err, AEERRORMESSAGE(replyEvent));
         return err;
     }
     NSAppleEventDescriptor *reportRecord = AERESULT(replyEvent, typeAERecord);
     *testStatus = [reportRecord descriptorForKeyword: 'Stat'].int32Value;
-    // TO DO: direct object needs to be list/record of two (or more?) fields: {statusFlag, reportText}
     NSString *report = [reportRecord descriptorForKeyword: 'Repo'].stringValue;
     if (report == nil) {
-        logErr(@"Missing report.");
+        logErr(@"Report generation failed (no text was returned)."); // bug in TestReport's renderreport handler
         return 1;
     }
     logOut(@"%@\n", report);
     return noErr;
 }
 
-//
 
+// create a new, clean AppleScript component instance, load the unit test script into it, and perform a single test
 OSAError runOneTest(OSALanguage *language, AEDesc scriptData, NSURL *scriptURL,
                     NSString *suiteName, NSString *handlerName, int lineWidth, int *status) {
     @autoreleasepool {
@@ -301,21 +315,6 @@ OSAError runOneTest(OSALanguage *language, AEDesc scriptData, NSURL *scriptURL,
         return err;
     }
 }
-
-
-/******************************************************************************/
-
-
-int terminalColumns(void) {
-    int width = -1;
-    struct winsize ws;
-    int fd = open("/dev/tty", O_RDONLY);
-    if (fd < 0) return -1;
-    if (ioctl(fd, TIOCGWINSZ, &ws) == 0) width = (int)ws.ws_col;
-    close(fd);
-    return width;
-}
-
 
 
 /******************************************************************************/
@@ -338,12 +337,12 @@ int runTestFile(NSURL *scriptURL) {
         // (note: this could quite easily be made recursive, allowing users to group suites into sub-suites if they wish, but for now just go with simple flat `suite>test` hierarchy and see how well that works in practice)
         OSAError err = OSAGetScriptDataFromURL((__bridge CFURLRef)(scriptURL), 0, 0, &scriptDesc);
         if (err != noErr) {
-            logErr(@"Failed to read script (error %i).\n", err);
+            logErr(@"Failed to read script (error %i).\n", err); // TO DO: better error reporting needed, e.g. if file not found or couldn't be read as script (currently returns -4960, unknown CF error, which is useless); probably need to check first if valid file path, then try OSAGetStorageType() to see if it's valid OSA script
             FAILRETURN;
         }
         err = OSALoadScriptData(languageInstance.componentInstance, &scriptDesc, (__bridge CFURLRef)(scriptURL), 0, &scriptID);
         if (err != noErr) {
-            logErr(@"Failed to load script (error %i).\n", err);
+            logErr(@"Failed to load script (error %i).\n", err); // TO DO: check what error is reported if not AppleScript storage type, and improve error reporting
             FAILRETURN;
         }
         NSArray<NSString *> *suiteNames = suiteNamesForScript(languageInstance.componentInstance, scriptID);
@@ -368,10 +367,10 @@ int runTestFile(NSURL *scriptURL) {
                 int status = _NOSTATUS; // 0 = TestTools failed (bug)
                 err = runOneTest(language, scriptDesc, scriptURL, suiteName, handlerName, lineWidth, &status);
                 if (err != noErr) FAILRETURN;
-                if (status == _SKIPSUITE) { // break out of runOneTest loop
+                if (status == _SKIPSUITE) { // entire suite was deliberately skipped by suite's configure_skipTests()
                     statusCounts.skipped++; // note: this doesn't distinguish between skipped tests and skipped suites; it's just to provide reminder in final result line that *something* got skipped
                     handlerNames = nil;
-                    break;
+                    break; // skip rest of this suite and proceed to next one
                 }
                 switch (status) {
                     case _SUCCESS:
@@ -383,8 +382,8 @@ int runTestFile(NSURL *scriptURL) {
                     case _BROKEN:
                         statusCounts.broken++;
                         break;
-                    case _NOSTATUS: // no asserts were performed
-                    case _SKIPPED:  // test handler was deliberately skipped
+                    case _NOSTATUS: // no asserts were performed by test handler, so report it as 'skipped'
+                    case _SKIPPED:  // test handler was deliberately skipped by suite's configure_skipTests()
                         statusCounts.skipped++;
                         break;
                     default:
@@ -408,10 +407,10 @@ int runTestFile(NSURL *scriptURL) {
 int main(int argc, const char * argv[]) {
     if (argc < 2 || strcmp(argv[1], "-h") == 0) {
         printf("Usage: osatest FILE ...\n");
-        return runTestFile([NSURL fileURLWithPath: @"~/Library/Script Libraries/unittests/text.unittest.scpt".stringByStandardizingPath]); // TEST; TO DO: delete
+//        return runTestFile([NSURL fileURLWithPath: @"~/Library/Script Libraries/unittests/text.unittest.scpt".stringByStandardizingPath]); // TEST; TO DO: delete
         return 0;
     }
-    for (int i = 1; i < argc; i++) {
+    for (int i = 1; i < argc; i++) { // run the specified unit test file(s)
         NSURL *scriptURL = [NSURL fileURLWithFileSystemRepresentation:argv[i] isDirectory: NO relativeToURL: nil];
         if (scriptURL == nil) return fnfErr;
         int err = runTestFile(scriptURL);
