@@ -13,6 +13,8 @@
 //
 //  TO DO: consider making `.unittest.scpt[d]` suffix mandatory, so that when passed a .scptd bundle (e.g. a library script) it can be searched automatically for embedded unit tests
 //
+//  TO DO: .scpt files work but .applescript files fail - why?
+//
 
 
 #import <Foundation/Foundation.h>
@@ -85,6 +87,7 @@ void logErr(NSString *format, ...) { // writes message to stderr
     NSString *message = [[NSString alloc] initWithFormat: format arguments: argList];
     va_end (argList);
     fputs(message.UTF8String, stderr);
+    fflush(stderr);
 }
 
 void logOut(NSString *format, ...) { // writes message to stdout
@@ -93,6 +96,7 @@ void logOut(NSString *format, ...) { // writes message to stdout
     NSString *message = [[NSString alloc] initWithFormat: format arguments: argList];
     va_end (argList);
     fputs(message.UTF8String, stdout);
+    fflush(stdout);
 }
 
 
@@ -147,7 +151,11 @@ NSArray<NSString *> *filterNamesByPrefix(NSAppleEventDescriptor *namesDesc, NSSt
 
 NSArray<NSString *> *suiteNamesForScript(ComponentInstance ci, OSAID scriptID) {
     AEDescList resultingNames;
-    if (OSAGetPropertyNames(ci, 0, scriptID, &resultingNames) != noErr) return nil;
+    OSAError err = OSAGetPropertyNames(ci, 0, scriptID, &resultingNames);
+    if (err != noErr) {
+        logErr(@"Failed to get suite names (error %i).\n", err);
+        return nil;
+    }
     return filterNamesByPrefix(AEWRAP(&resultingNames), @"suite_");
 }
 
@@ -218,9 +226,9 @@ OSAError callTestTools(ComponentInstance ci, OSAID scriptID,
                       @"to __performunittest__(|params|)\n"
                       @"  return script \"" TESTLIBRARYNAME @"\"'s __performunittestforsuite__(my (%@), (|params|))\n"
                       @"end __performunittest__", escapedSuiteName];
-    OSAError err = OSACompile(ci, AESTRING(code).aeDesc, kOSAModeAugmentContext, &scriptID);
+    OSAError err = OSACompile(ci, AESTRING(code).aeDesc, kOSAModeAugmentContext, &scriptID); // TO DO: this fails with errOSAInvalidID when script is loaded from .applescript file; why?
     if (err != noErr) {
-        logErr(@"Failed to add __performunittest__\n");
+        logErr(@"Failed to add __performunittest__ (error %i)\n", err);
         return err;
     }
     // build AppleEvent to invoke the __performunittest__ handler
@@ -291,7 +299,7 @@ OSAError printTestReport(ComponentInstance ci, OSAID scriptID, int lineWidth, in
     *testStatus = [reportRecord descriptorForKeyword: 'Stat'].int32Value;
     NSString *report = [reportRecord descriptorForKeyword: 'Repo'].stringValue;
     if (report == nil) {
-        logErr(@"Report generation failed (no text was returned)."); // bug in TestReport's renderreport handler
+        logErr(@"Report generation failed (no text was returned).\n"); // bug in TestReport's renderreport handler
         return 1;
     }
     logOut(@"%@\n", report);
@@ -309,7 +317,7 @@ OSAError runOneTest(OSALanguage *language, AEDesc scriptData, NSURL *scriptURL,
         if (err != noErr) return err; // (shouldn't fail as script's already been successfully loaded once)
         err = callTestTools(li.componentInstance, scriptID, suiteName, handlerName, lineWidth, &reportScriptID);
         if (err == noErr) err = printTestReport(li.componentInstance, reportScriptID, lineWidth, status);
-        if (err != noErr) logErr(@"Failed to generate report (error %i)", err); // i.e. TestTools bug
+        if (err != noErr) logErr(@"Failed to generate report (error %i).\n", err); // i.e. TestTools bug
         OSADispose(li.componentInstance, reportScriptID);
         OSADispose(li.componentInstance, scriptID);
         return err;
@@ -340,16 +348,13 @@ int runTestFile(NSURL *scriptURL) {
             logErr(@"Failed to read script (error %i).\n", err); // TO DO: better error reporting needed, e.g. if file not found or couldn't be read as script (currently returns -4960, unknown CF error, which is useless); probably need to check first if valid file path, then try OSAGetStorageType() to see if it's valid OSA script
             FAILRETURN;
         }
-        err = OSALoadScriptData(languageInstance.componentInstance, &scriptDesc, (__bridge CFURLRef)(scriptURL), 0, &scriptID);
+        err = OSALoadScriptData(languageInstance.componentInstance, &scriptDesc, (__bridge CFURLRef)(scriptURL), kOSAModeCompileIntoContext, &scriptID);
         if (err != noErr) {
             logErr(@"Failed to load script (error %i).\n", err); // TO DO: check what error is reported if not AppleScript storage type, and improve error reporting
             FAILRETURN;
         }
         NSArray<NSString *> *suiteNames = suiteNamesForScript(languageInstance.componentInstance, scriptID);
-        if (suiteNames == nil) {
-            logErr(@"Failed to get suite names.\n");
-            FAILRETURN;
-        }
+        if (suiteNames == nil) FAILRETURN;
         // run the unit tests
         // important: each test must run in its own CI to avoid sharing TIDs, library instances, etc with other tests
         NSString *testTitleTemplate = lineWidth == -1 ? @"%i.%i %@'s %@: " : @"\x1b[1m%i.%i %@'s %@\x1b[0m: ";

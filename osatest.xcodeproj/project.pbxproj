@@ -29,7 +29,6 @@
 		4F19C1301C5532AD002A466E /* main.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = main.m; sourceTree = "<group>"; };
 		4F19C1371C5532CE002A466E /* OSAKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = OSAKit.framework; path = System/Library/Frameworks/OSAKit.framework; sourceTree = SDKROOT; };
 		4F19C13A1C553392002A466E /* Carbon.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Carbon.framework; path = System/Library/Frameworks/Carbon.framework; sourceTree = SDKROOT; };
-		4F19C13C1C5533A8002A466E /* OpenScripting.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = OpenScripting.framework; path = ../../../Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX10.11.sdk/System/Library/Frameworks/Carbon.framework/Frameworks/OpenScripting.framework; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -73,7 +72,6 @@
 		4F19C1391C5532D7002A466E /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
-				4F19C13C1C5533A8002A466E /* OpenScripting.framework */,
 				4F19C13A1C553392002A466E /* Carbon.framework */,
 				4F19C1371C5532CE002A466E /* OSAKit.framework */,
 			);
@@ -264,6 +262,7 @@
 				4F19C1361C5532AD002A466E /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
 	};
