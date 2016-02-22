@@ -7,11 +7,9 @@
 //  Therefore everything except creating AppleScript CIs (which OSALanguageInstance can do)
 //  is done via gnarly old legacy C APIs, which is not ideal but is the only way that works.
 //
-//  TO DO: reenable deprecation warnings once logAEDesc is no longer needed and can be deleted
-//
 //  TO DO: what to do about control chars appearing in test reports (particularly NUL)?
 //
-//  TO DO: consider making `.unittest.scpt[d]` suffix mandatory, so that when passed a .scptd bundle (e.g. a library script) it can be searched automatically for embedded unit tests
+//  TO DO: help text should recommend use of a `.unittest.scpt[d]` suffix for test scripts, and include an example shell script that recursively searches a folder for all files with `.unittest.scpt[d]` suffixes and passes them to osatest to run
 //
 //  TO DO: .scpt files work but .applescript files fail - why?
 //
@@ -73,13 +71,6 @@ typedef struct {
 
 /******************************************************************************/
 // print to stdout/stderr
-
-void logAEDesc(char *labelCStr, AEDesc *aeDescPtr) { // DEBUG // TO DO: delete once no longer needed
-    Handle h;
-    AEPrintDescToHandle((aeDescPtr), &h);
-    fprintf(stderr, "%s%s\n", (labelCStr), *h);
-    DisposeHandle(h); // deprecated API
-}
 
 void logErr(NSString *format, ...) { // writes message to stderr
     va_list argList;
@@ -399,7 +390,7 @@ int runTestFile(NSURL *scriptURL) {
         }
         NSDate *endedTime = [NSDate date];
         logOut(@"Ended tests at %@ (%0.3fs)\n", endedTime, [endedTime timeIntervalSinceDate: startTime]);
-        logOut(@"%@Result: %i passed, %i failed, %i broken, %i skipped.%@\n\n",
+        logOut(@"%@Result: %i tests passed, %i failed, %i broken, %i skipped.%@\n\n",
                (lineWidth == -1 ? @"" : (statusCounts.failure == 0 && statusCounts.broken == 0 ? VTPASSED : VTFAILED)),
                statusCounts.success, statusCounts.failure, statusCounts.broken, statusCounts.skipped,
                (lineWidth == -1 ? @"" : VTNORMAL));
@@ -412,7 +403,6 @@ int runTestFile(NSURL *scriptURL) {
 int main(int argc, const char * argv[]) {
     if (argc < 2 || strcmp(argv[1], "-h") == 0) {
         printf("Usage: osatest FILE ...\n");
-//        return runTestFile([NSURL fileURLWithPath: @"~/Library/Script Libraries/unittests/text.unittest.scpt".stringByStandardizingPath]); // TEST; TO DO: delete
         return 0;
     }
     for (int i = 1; i < argc; i++) { // run the specified unit test file(s)
