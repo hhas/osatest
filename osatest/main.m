@@ -7,8 +7,6 @@
 //  Therefore everything except creating AppleScript CIs (which OSALanguageInstance can do)
 //  is done via gnarly old legacy C APIs, which is not ideal but is the only way that works.
 //
-//  TO DO: what to do about control chars appearing in test reports (particularly NUL)?
-//
 //  TO DO: help text should recommend use of a `.unittest.scpt[d]` suffix for test scripts, and include an example shell script that recursively searches a folder for all files with `.unittest.scpt[d]` suffixes and passes them to osatest to run
 //
 //  TO DO: .scpt files work but .applescript files fail - why?
@@ -72,12 +70,37 @@ typedef struct {
 /******************************************************************************/
 // print to stdout/stderr
 
+// determine if stdout is connected to a terminal (if it is, test reports will be formatted accordingly)
+int terminalColumns(void) {
+    int width = -1;
+    struct winsize ws;
+    int fd = open("/dev/tty", O_RDONLY);
+    if (fd < 0) return -1;
+    if (ioctl(fd, TIOCGWINSZ, &ws) == 0) width = (int)ws.ws_col;
+    close(fd);
+    return width;
+}
+
+NSString *sanitizeString(NSString *s) {
+    // U+0000—U+001F (C0 controls), U+007F (delete), and U+0080—U+009F
+    static NSRegularExpression *pattern = nil;
+    static BOOL useStyles;
+    if (pattern == nil) {
+        pattern = [NSRegularExpression regularExpressionWithPattern: @"[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1a\\x1c-\\x1f\\x7f-\\u009f]"
+                                                            options: 0 error: nil];
+        useStyles = terminalColumns() != -1;
+    }
+    s = [s stringByReplacingOccurrencesOfString: @"\r" withString: @"\n"];
+    return [pattern stringByReplacingMatchesInString: s options: 0 range: NSMakeRange(0, s.length)
+                                        withTemplate: (useStyles ? (VTRED @"¿" VTNORMAL) : @"¿")];
+}
+
 void logErr(NSString *format, ...) { // writes message to stderr
     va_list argList;
     va_start (argList, format);
     NSString *message = [[NSString alloc] initWithFormat: format arguments: argList];
     va_end (argList);
-    fputs(message.UTF8String, stderr);
+    fputs(sanitizeString(message).UTF8String, stderr);
     fflush(stderr);
 }
 
@@ -86,7 +109,7 @@ void logOut(NSString *format, ...) { // writes message to stdout
     va_start (argList, format);
     NSString *message = [[NSString alloc] initWithFormat: format arguments: argList];
     va_end (argList);
-    fputs(message.UTF8String, stdout);
+    fputs(sanitizeString(message).UTF8String, stdout);
     fflush(stdout);
 }
 
@@ -109,20 +132,8 @@ NSString *scriptErrorMessage(ComponentInstance ci) {
     return AEWRAP(&desc).stringValue;
 }
 
-void logScriptError(ComponentInstance ci, NSString *message) { // writes OSA script error (i.e. osatest/TestTools bug) to stderr
-    logErr(@"%@ (script error %i: %@)\n", message, scriptErrorNumber(ci), scriptErrorMessage(ci));
-}
-
-
-// determine if stdout is connected to a terminal (if it is, test reports will be formatted accordingly)
-int terminalColumns(void) {
-    int width = -1;
-    struct winsize ws;
-    int fd = open("/dev/tty", O_RDONLY);
-    if (fd < 0) return -1;
-    if (ioctl(fd, TIOCGWINSZ, &ws) == 0) width = (int)ws.ws_col;
-    close(fd);
-    return width;
+NSString *scriptErrorDescription(ComponentInstance ci) { // get details for errOSAScriptError (i.e. osatest/TestTools bug)
+    return [NSString stringWithFormat: @"script error %i: %@", scriptErrorNumber(ci), scriptErrorMessage(ci)];
 }
 
 
@@ -214,8 +225,8 @@ OSAError callTestTools(ComponentInstance ci, OSAID scriptID,
     // add a new code-generated __performunittest__ handler to test script
     NSString *escapedSuiteName = sanitizeIdentifier(suiteName);
     NSString *code = [NSString stringWithFormat:
-                      @"to __performunittest__(|params|)\n"
-                      @"  return script \"" TESTLIBRARYNAME @"\"'s __performunittestforsuite__(my (%@), (|params|))\n"
+                      @"to __performunittest__(|paramsList|)\n"
+                      @"  return (script \"" TESTLIBRARYNAME @"\"'s __performunittestforsuite__(my (%@), (|paramsList|)))\n"
                       @"end __performunittest__", escapedSuiteName];
     OSAError err = OSACompile(ci, AESTRING(code).aeDesc, kOSAModeAugmentContext, &scriptID); // TO DO: this fails with errOSAInvalidID when script is loaded from .applescript file; why?
     if (err != noErr) {
@@ -235,9 +246,9 @@ OSAError callTestTools(ComponentInstance ci, OSAID scriptID,
     // __performunittestforsuite__ should always return a TestReport object, which appears as a new scriptID
     err = OSAExecuteEvent(ci, event.aeDesc, scriptID, 0, reportScriptID);
     if (err == errOSAScriptError) { // i.e. osatest/TestTools bug
-        logScriptError(ci, [NSString stringWithFormat: @"Failed to perform %@'s %@.", suiteName, handlerName]);
+        logErr(@"Failed to perform %@'s %@ (%@).", suiteName, handlerName, scriptErrorDescription(ci));
     } else if (err != noErr) { // i.e. TestTools bug
-        logErr(@"OSADoEvent error: %i\n\n", err); // e.g. -1708 = event not handled
+        logErr(@"Failed to perform %@'s %@: OSAExecuteEvent error: %i.\n", suiteName, handlerName, err); // e.g. -1708 = event not handled
     }
     return err;
 }
@@ -254,8 +265,8 @@ OSAError printTestReport(ComponentInstance ci, OSAID scriptID, int lineWidth, in
         err = OSAExecuteEvent(ci, getRawEvent.aeDesc, scriptID, 0, &valueID);
         if (err != noErr) {
             if (err == errOSAScriptError) {
-                if (scriptErrorNumber(ci) == 6502) break; // error 6502 signals that iterator is exhausted, so exit loop
-                logScriptError(ci, @"Failed to get next raw value."); // else it's a bug in TestSupport's nextrawdata iterator
+                if (scriptErrorNumber(ci) == 6502) break; // iterator raises error 6502 to indicate it's exhausted, so exit loop
+                logErr(@"Failed to get next raw value (%@).", scriptErrorDescription(ci)); // else it's a bug in TestSupport's nextrawdata iterator
             } else if (err != noErr) { // some other bug (e.g. -1708 = event not handled, i.e. incorrect handler name)
                 logErr(@"Failed to get next raw value (error: %i).\n", err);
             }
@@ -307,8 +318,10 @@ OSAError runOneTest(OSALanguage *language, AEDesc scriptData, NSURL *scriptURL,
         OSAError err = OSALoadScriptData(li.componentInstance, &scriptData, (__bridge CFURLRef)(scriptURL), 0, &scriptID);
         if (err != noErr) return err; // (shouldn't fail as script's already been successfully loaded once)
         err = callTestTools(li.componentInstance, scriptID, suiteName, handlerName, lineWidth, &reportScriptID);
-        if (err == noErr) err = printTestReport(li.componentInstance, reportScriptID, lineWidth, status);
-        if (err != noErr) logErr(@"Failed to generate report (error %i).\n", err); // i.e. TestTools bug
+        if (err == noErr) {
+            err = printTestReport(li.componentInstance, reportScriptID, lineWidth, status);
+            if (err != noErr) logErr(@"Failed to generate report (error %i).\n", err); // i.e. TestTools bug
+        }
         OSADispose(li.componentInstance, reportScriptID);
         OSADispose(li.componentInstance, scriptID);
         return err;
@@ -390,7 +403,7 @@ int runTestFile(NSURL *scriptURL) {
         }
         NSDate *endedTime = [NSDate date];
         logOut(@"Ended tests at %@ (%0.3fs)\n", endedTime, [endedTime timeIntervalSinceDate: startTime]);
-        logOut(@"%@Result: %i tests passed, %i failed, %i broken, %i skipped.%@\n\n",
+        logOut(@"%@Result: %i tests passed, %i failed, %i broken, %i skipped.%@\n",
                (lineWidth == -1 ? @"" : (statusCounts.failure == 0 && statusCounts.broken == 0 ? VTPASSED : VTFAILED)),
                statusCounts.success, statusCounts.failure, statusCounts.broken, statusCounts.skipped,
                (lineWidth == -1 ? @"" : VTNORMAL));
@@ -403,13 +416,14 @@ int runTestFile(NSURL *scriptURL) {
 int main(int argc, const char * argv[]) {
     if (argc < 2 || strcmp(argv[1], "-h") == 0) {
         printf("Usage: osatest FILE ...\n");
-        return 0;
+    } else {
+        for (int i = 1; i < argc; i++) { // run the specified unit test file(s)
+            NSURL *scriptURL = [NSURL fileURLWithFileSystemRepresentation:argv[i] isDirectory: NO relativeToURL: nil];
+            if (scriptURL == nil) return fnfErr;
+            int err = runTestFile(scriptURL);
+            if (err != noErr) return err;
+        }
     }
-    for (int i = 1; i < argc; i++) { // run the specified unit test file(s)
-        NSURL *scriptURL = [NSURL fileURLWithFileSystemRepresentation:argv[i] isDirectory: NO relativeToURL: nil];
-        if (scriptURL == nil) return fnfErr;
-        int err = runTestFile(scriptURL);
-        if (err != noErr) return err;
-    }
+    return 0;
 }
 
