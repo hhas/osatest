@@ -9,7 +9,7 @@
 //
 //  TO DO: help text should recommend use of a `.unittest.scpt[d]` suffix for test scripts, and include an example shell script that recursively searches a folder for all files with `.unittest.scpt[d]` suffixes and passes them to osatest to run
 //
-//  TO DO: .scpt files work but .applescript files fail - why?
+//  TO DO: .scpt files work but .applescript files fail - why? -- TO DO: check if this works now
 //
 
 
@@ -223,12 +223,11 @@ OSAError callSubroutine(ComponentInstance ci, OSAID scriptID, NSString *handlerN
 OSAError callTestTools(ComponentInstance ci, OSAID scriptID,
                        NSString *suiteName, NSString *handlerName, int lineWidth, OSAID *reportScriptID) {
     // add a new code-generated __performunittest__ handler to test script
-    NSString *escapedSuiteName = sanitizeIdentifier(suiteName);
     NSString *code = [NSString stringWithFormat:
-                      @"to __performunittest__(|paramsList|)\n"
-                      @"  return (script \"" TESTLIBRARYNAME @"\"'s __performunittestforsuite__(my (%@), (|paramsList|)))\n"
-                      @"end __performunittest__", escapedSuiteName];
-    OSAError err = OSACompile(ci, AESTRING(code).aeDesc, kOSAModeAugmentContext, &scriptID); // TO DO: this fails with errOSAInvalidID when script is loaded from .applescript file; why?
+                      @"to |__performunittest__|(|_paramslist_|)\n"
+                      @"  return script \"" TESTLIBRARYNAME @"\"'s |__performunittestforsuite__|(my %@, |_paramslist_|)\n"
+                      @"end |__performunittest__|", sanitizeIdentifier(suiteName)];
+    OSAError err = OSACompile(ci, AESTRING(code).aeDesc, kOSAModeAugmentContext, &scriptID); // TO DO: this fails with errOSAInvalidID when script is loaded from .applescript file; why? // TO DO: check this
     if (err != noErr) {
         logErr(@"Failed to add __performunittest__ (error %i)\n", err);
         return err;
@@ -315,7 +314,8 @@ OSAError runOneTest(OSALanguage *language, AEDesc scriptData, NSURL *scriptURL,
     @autoreleasepool {
         OSALanguageInstance *li = [OSALanguageInstance languageInstanceWithLanguage: language];
         OSAID scriptID, reportScriptID = 0;
-        OSAError err = OSALoadScriptData(li.componentInstance, &scriptData, (__bridge CFURLRef)(scriptURL), 0, &scriptID);
+        OSAError err = OSALoadScriptData(li.componentInstance, &scriptData, (__bridge CFURLRef)(scriptURL),
+                                         kOSAModeCompileIntoContext, &scriptID);
         if (err != noErr) return err; // (shouldn't fail as script's already been successfully loaded once)
         err = callTestTools(li.componentInstance, scriptID, suiteName, handlerName, lineWidth, &reportScriptID);
         if (err == noErr) {
