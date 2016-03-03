@@ -9,8 +9,6 @@
 //
 //  TO DO: help text should recommend use of a `.unittest.scpt[d]` suffix for test scripts, and include an example shell script that recursively searches a folder for all files with `.unittest.scpt[d]` suffixes and passes them to osatest to run
 //
-//  TO DO: .scpt files work but .applescript files fail - why? -- TO DO: check if this works now
-//
 
 
 #import <Foundation/Foundation.h>
@@ -223,11 +221,18 @@ OSAError callSubroutine(ComponentInstance ci, OSAID scriptID, NSString *handlerN
 OSAError callTestTools(ComponentInstance ci, OSAID scriptID,
                        NSString *suiteName, NSString *handlerName, int lineWidth, OSAID *reportScriptID) {
     // add a new code-generated __performunittest__ handler to test script
+    
+    // TO DO: problem: something is tickling a deep rooted (bytecode-related?) Heisenbug in AS that causes bizarre errors to manifest on occasion when the unittest script is run within SE (or osascript), rather than directly from Terminal
+    
+    // note: for this to work correctly, the TestTools instance used to run the test must be the same instance that the unittest script imported itself (__performunittest__ sets properties within TestTools that will be used by `assert` handlers when the test handler is called)
+    
+    // one way to avoid augmenting context would be for unittest script to use `property parent : a ref to script "TestTools"`; that would allow __performunittestforsuite__ message to be dispatched to unittest script but handled by TestTools
+    
     NSString *code = [NSString stringWithFormat:
                       @"to |__performunittest__|(|_paramslist_|)\n"
                       @"  return script \"" TESTLIBRARYNAME @"\"'s |__performunittestforsuite__|(my %@, |_paramslist_|)\n"
                       @"end |__performunittest__|", sanitizeIdentifier(suiteName)];
-    OSAError err = OSACompile(ci, AESTRING(code).aeDesc, kOSAModeAugmentContext, &scriptID); // TO DO: this fails with errOSAInvalidID when script is loaded from .applescript file; why? // TO DO: check this
+    OSAError err = OSACompile(ci, AESTRING(code).aeDesc, kOSAModeAugmentContext, &scriptID);
     if (err != noErr) {
         logErr(@"Failed to add __performunittest__ (error %i)\n", err);
         return err;
