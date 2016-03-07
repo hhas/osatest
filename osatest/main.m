@@ -7,8 +7,24 @@
 //  Therefore everything except creating AppleScript CIs (which OSALanguageInstance can do)
 //  is done via gnarly old legacy C APIs, which is not ideal but is the only way that works.
 //
+
+
 //  TO DO: help text should recommend use of a `.unittest.scpt[d]` suffix for test scripts, and include an example shell script that recursively searches a folder for all files with `.unittest.scpt[d]` suffixes and passes them to osatest to run
-//
+
+
+/*
+ 
+ TO DO: There is a serious reliability problem where during unit test development `osatest` periodically fails when run with completely unexpected, nonsensical errors. These errors arbitrarily appear after a particular edit to the unit test code, and are 100% repeatable until that code is modified again, at which point they disapear again. Even non-logic edits such as inserting a comment into the unit test script cause the problem to vanish, so it's not the AppleScript code itself that's at fault, nor is osatest doing anything *obviously* incorrect that would explain the strange pattern in which these failures manifest.
+ 
+Best guess is that osatest is tickling a deep rooted (bytecode-related?) Heisenbug in AS that causes bizarre errors (most commonly 1011) to manifest on occasion when the unittest script is run within SE (or osascript), rather than directly from Terminal (though it does sometimes appear in Terminal too). Since this bug doesn't manifest in everyday AppleScript use, osatest is presumably doing something that creates the conditions in which it can manifest. The most likely place to look would be the OSACompile() call below, which augments the unittest script's existing context with a code-generated __performunittest__ handler that calls TestTools' __performunittestforsuite__ handler, passing the suite object as an argument.
+ 
+ Note that for the unit testing framework to work correctly, the TestTools instance used to run the test *must* be the same instance that the unittest script imported itself (__performunittestforsuite__ sets properties within TestTools that will be used by `assert` handlers when the test handler is called). Therefore it's not possible to move __performunittestforsuite__ to a separate script that could be called more easily.
+ 
+ One way to avoid augmenting context would be for unittest script to import TestTools using `property parent : a reference to script "TestTools"` instead of `use script "TestTools"`. Using AS's standard delegation mechanism rather than magical library mixin would allow osatest to dispatch a `__performunittestforsuite__` message directly to the unittest script, which would then delegate it to TestTools with itself as the default target. TestTools could then code-generate a callObject for the given suite and handler names and apply it to the unittest script to call the appropriate configure_NAME and test_NAME handlers. (OTOH, it would be preferable to stick with the established `use script "..."` idiom for importing TestTools, as users are more likely to trip up on non-standard idioms.)
+ 
+ If the above hunch is right, eliminating the kOSAModeAugmentContext step should avoid tickling the AS bug that leads to these bizarre failures; if not, would just need to keep looking. That said, the right solution would be to hunt down and squash the bug in the AS interpreter. In any case, getting to the bottom of this is really a job for the AS devs, as they have access to the AS innards.
+ 
+ */
 
 
 #import <Foundation/Foundation.h>
@@ -220,17 +236,10 @@ OSAError callSubroutine(ComponentInstance ci, OSAID scriptID, NSString *handlerN
 // run a single unit test, returning scriptID for a TestReport script object containing the raw test results
 OSAError callTestTools(ComponentInstance ci, OSAID scriptID,
                        NSString *suiteName, NSString *handlerName, int lineWidth, OSAID *reportScriptID) {
-    // add a new code-generated __performunittest__ handler to test script
-    
-    // TO DO: problem: something is tickling a deep rooted (bytecode-related?) Heisenbug in AS that causes bizarre errors to manifest on occasion when the unittest script is run within SE (or osascript), rather than directly from Terminal
-    
-    // note: for this to work correctly, the TestTools instance used to run the test must be the same instance that the unittest script imported itself (__performunittest__ sets properties within TestTools that will be used by `assert` handlers when the test handler is called)
-    
-    // one way to avoid augmenting context would be for unittest script to use `property parent : a ref to script "TestTools"`; that would allow __performunittestforsuite__ message to be dispatched to unittest script but handled by TestTools
-    
+    // add a new code-generated __performunittest__ handler to test script -- TO DO: see comment at top of file
     NSString *code = [NSString stringWithFormat:
-                      @"to |__performunittest__|(|_paramslist_|)\n"
-                      @"  return script \"" TESTLIBRARYNAME @"\"'s |__performunittestforsuite__|(my %@, |_paramslist_|)\n"
+                      @"to |__performunittest__|(|__paramslist__|)\n"
+                      @"  return script \"" TESTLIBRARYNAME @"\"'s |__performunittestforsuite__|(my %@, |__paramslist__|)\n"
                       @"end |__performunittest__|", sanitizeIdentifier(suiteName)];
     OSAError err = OSACompile(ci, AESTRING(code).aeDesc, kOSAModeAugmentContext, &scriptID);
     if (err != noErr) {
